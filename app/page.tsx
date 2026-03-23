@@ -1,11 +1,15 @@
 "use client";
+
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { supabase } from "../lib/supabase";
+import { createClient } from "../utils/supabase/client";
+import type { User } from "@supabase/supabase-js";
 
 type Game = {
   id: number;
   opponent: string;
   date: string;
+  is_home: boolean;
 };
 
 type Listing = {
@@ -15,24 +19,130 @@ type Listing = {
   price: string;
   quantity: string;
   email: string;
+  user_id: string | null;
   status: "available" | "sold";
 };
 
-const games: Game[] = [
-  { id: 1, opponent: "Miami", date: "April 5" },
-  { id: 2, opponent: "Florida", date: "April 12" },
-  { id: 3, opponent: "Clemson", date: "April 20" },
-];
+function formatDate(dateString: string) {
+  const date = new Date(`${dateString}T00:00:00`);
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function NavBar({
+  user,
+  onSignOut,
+}: {
+  user: User | null;
+  onSignOut: () => void;
+}) {
+  return (
+    <div
+      style={{
+        maxWidth: 700,
+        margin: "0 auto 20px auto",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+      }}
+    >
+      <Link
+        href="/"
+        style={{
+          textDecoration: "none",
+          color: "#111",
+          fontWeight: 700,
+          fontSize: 18,
+        }}
+      >
+        Ticket Pool
+      </Link>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <Link
+          href="/"
+          style={{
+            textDecoration: "none",
+            color: "#111",
+            background: "white",
+            border: "1px solid #ddd",
+            padding: "10px 14px",
+            borderRadius: 10,
+            fontWeight: 600,
+            fontSize: 14,
+          }}
+        >
+          Home
+        </Link>
+
+        <Link
+          href="/my-listings"
+          style={{
+            textDecoration: "none",
+            color: "#111",
+            background: "white",
+            border: "1px solid #ddd",
+            padding: "10px 14px",
+            borderRadius: 10,
+            fontWeight: 600,
+            fontSize: 14,
+          }}
+        >
+          My Listings
+        </Link>
+
+        {user ? (
+          <button
+            onClick={onSignOut}
+            style={{
+              background: "#111",
+              color: "white",
+              border: "none",
+              padding: "10px 14px",
+              borderRadius: 10,
+              fontWeight: 600,
+              cursor: "pointer",
+              fontSize: 14,
+            }}
+          >
+            Sign Out
+          </button>
+        ) : (
+          <Link
+            href="/login"
+            style={{
+              textDecoration: "none",
+              color: "white",
+              background: "#111",
+              padding: "10px 14px",
+              borderRadius: 10,
+              fontWeight: 600,
+              fontSize: 14,
+            }}
+          >
+            Sign In
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
+  const supabase = createClient();
+
+  const [user, setUser] = useState<User | null>(null);
   const [selectedGame, setSelectedGame] = useState<Game | null>(null);
+  const [games, setGames] = useState<Game[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [form, setForm] = useState({
     price: "",
     quantity: "",
-    email: "",
   });
 
   const [buyingListingId, setBuyingListingId] = useState<number | null>(null);
@@ -42,28 +152,51 @@ export default function Home() {
   });
 
   useEffect(() => {
-    const fetchListings = async () => {
-      const { data, error } = await supabase
-        .from("listings")
-        .select("*")
-        .order("id", { ascending: false });
+    const loadData = async () => {
+      const [{ data: authData }, gamesResult, listingsResult] = await Promise.all([
+        supabase.auth.getUser(),
+        supabase.from("games").select("*").eq("is_home", true).order("date", { ascending: true }),
+        supabase.from("listings").select("*").order("id", { ascending: false }),
+      ]);
 
-      if (!error && data) {
-        setListings(data as Listing[]);
-      } else if (error) {
-        console.error("Error loading listings:", error.message);
+      setUser(authData.user ?? null);
+
+      if (!gamesResult.error && gamesResult.data) {
+        setGames(gamesResult.data as Game[]);
+      }
+
+      if (!listingsResult.error && listingsResult.data) {
+        setListings(listingsResult.data as Listing[]);
       }
 
       setLoading(false);
     };
 
-    fetchListings();
-  }, []);
+    loadData();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, [supabase]);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    window.location.href = "/";
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!selectedGame) return;
+
+    if (!user) {
+      window.location.href = "/login";
+      return;
+    }
 
     const { data, error } = await supabase
       .from("listings")
@@ -73,21 +206,21 @@ export default function Home() {
           opponent: selectedGame.opponent,
           price: form.price,
           quantity: form.quantity,
-          email: form.email,
+          email: user.email ?? "",
+          user_id: user.id,
           status: "available",
         },
       ])
       .select();
 
     if (error) {
-      console.error("Error adding listing:", error.message);
       alert("Could not add listing.");
       return;
     }
 
     if (data && data.length > 0) {
       setListings((prev) => [data[0] as Listing, ...prev]);
-      setForm({ price: "", quantity: "", email: "" });
+      setForm({ price: "", quantity: "" });
       alert("Ticket added to resale pool!");
     }
   };
@@ -108,7 +241,6 @@ export default function Home() {
       .eq("id", buyingListingId);
 
     if (error) {
-      console.error("Error updating listing:", error.message);
       alert("Could not complete purchase request.");
       return;
     }
@@ -123,7 +255,7 @@ export default function Home() {
 
     setBuyingListingId(null);
     setBuyerForm({ name: "", email: "" });
-    alert("Purchase request received! The seller will be contacted to transfer the tickets.");
+    alert("Purchase request received!");
   };
 
   const inputStyle: React.CSSProperties = {
@@ -142,23 +274,22 @@ export default function Home() {
         style={{
           minHeight: "100vh",
           background: "#f5f5f5",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          padding: "24px 20px 40px",
           fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
         }}
       >
+        <NavBar user={user} onSignOut={handleSignOut} />
         <div
           style={{
+            maxWidth: 700,
+            margin: "0 auto",
             background: "white",
             padding: 24,
             borderRadius: 16,
             boxShadow: "0 10px 30px rgba(0,0,0,0.08)",
-            color: "#222",
-            fontWeight: 600,
           }}
         >
-          Loading tickets...
+          Loading...
         </div>
       </main>
     );
@@ -170,10 +301,12 @@ export default function Home() {
         style={{
           minHeight: "100vh",
           background: "#f5f5f5",
-          padding: "40px 20px",
+          padding: "24px 20px 40px",
           fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
         }}
       >
+        <NavBar user={user} onSignOut={handleSignOut} />
+
         <div
           style={{
             maxWidth: 700,
@@ -193,29 +326,35 @@ export default function Home() {
           </p>
 
           <h2 style={{ color: "#222", fontWeight: 600, marginBottom: 16 }}>
-            Upcoming Games
+            Upcoming Home Games
           </h2>
 
-          <div style={{ display: "grid", gap: 12 }}>
-            {games.map((game) => (
-              <button
-                key={game.id}
-                onClick={() => setSelectedGame(game)}
-                style={{
-                  padding: 16,
-                  borderRadius: 12,
-                  border: "1px solid #ddd",
-                  background: "white",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  fontSize: 16,
-                }}
-              >
-                <strong style={{ color: "#111" }}>{game.opponent}</strong>
-                <div style={{ color: "#666", marginTop: 4 }}>{game.date}</div>
-              </button>
-            ))}
-          </div>
+          {games.length === 0 ? (
+            <p style={{ color: "#666" }}>No games available right now.</p>
+          ) : (
+            <div style={{ display: "grid", gap: 12 }}>
+              {games.map((game) => (
+                <button
+                  key={game.id}
+                  onClick={() => setSelectedGame(game)}
+                  style={{
+                    padding: 16,
+                    borderRadius: 12,
+                    border: "1px solid #ddd",
+                    background: "white",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    fontSize: 16,
+                  }}
+                >
+                  <strong style={{ color: "#111" }}>{game.opponent}</strong>
+                  <div style={{ color: "#666", marginTop: 4 }}>
+                    {formatDate(game.date)}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </main>
     );
@@ -230,10 +369,12 @@ export default function Home() {
       style={{
         minHeight: "100vh",
         background: "#f5f5f5",
-        padding: "40px 20px",
+        padding: "24px 20px 40px",
         fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
       }}
     >
+      <NavBar user={user} onSignOut={handleSignOut} />
+
       <div
         style={{
           maxWidth: 700,
@@ -263,7 +404,7 @@ export default function Home() {
         </button>
 
         <h1 style={{ color: "#111", fontWeight: 700, marginBottom: 8 }}>
-          {selectedGame.opponent} — {selectedGame.date}
+          {selectedGame.opponent} — {formatDate(selectedGame.date)}
         </h1>
 
         <p style={{ color: "#444", marginTop: 0, marginBottom: 24 }}>
@@ -271,9 +412,7 @@ export default function Home() {
         </p>
 
         <section style={{ marginBottom: 32 }}>
-          <h2 style={{ color: "#222", fontWeight: 600 }}>
-            Available Tickets
-          </h2>
+          <h2 style={{ color: "#222", fontWeight: 600 }}>Available Tickets</h2>
 
           {availableListings.length === 0 ? (
             <p style={{ color: "#666" }}>
@@ -290,9 +429,7 @@ export default function Home() {
                     padding: 16,
                   }}
                 >
-                  <strong style={{ color: "#111" }}>
-                    {l.quantity} ticket(s)
-                  </strong>
+                  <strong style={{ color: "#111" }}>{l.quantity} ticket(s)</strong>
                   <div style={{ marginTop: 6, color: "#111", fontWeight: 500 }}>
                     ${l.price}
                   </div>
@@ -319,9 +456,7 @@ export default function Home() {
 
         {soldListings.length > 0 && (
           <section style={{ marginBottom: 32 }}>
-            <h2 style={{ color: "#222", fontWeight: 600 }}>
-              Recently Claimed
-            </h2>
+            <h2 style={{ color: "#222", fontWeight: 600 }}>Recently Claimed</h2>
             <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
               {soldListings.map((l) => (
                 <div
@@ -333,9 +468,7 @@ export default function Home() {
                     background: "#fafafa",
                   }}
                 >
-                  <strong style={{ color: "#555" }}>
-                    {l.quantity} ticket(s)
-                  </strong>
+                  <strong style={{ color: "#555" }}>{l.quantity} ticket(s)</strong>
                   <div style={{ marginTop: 6, color: "#555" }}>${l.price}</div>
                   <div
                     style={{
@@ -358,9 +491,13 @@ export default function Home() {
         )}
 
         <section>
-          <h2 style={{ color: "#222", fontWeight: 600 }}>
-            Return Tickets
-          </h2>
+          <h2 style={{ color: "#222", fontWeight: 600 }}>Return Tickets</h2>
+
+          {!user && (
+            <p style={{ color: "#555", marginBottom: 12 }}>
+              Please <Link href="/login">sign in</Link> to list tickets.
+            </p>
+          )}
 
           <form
             onSubmit={handleSubmit}
@@ -371,8 +508,6 @@ export default function Home() {
               value={form.price}
               onChange={(e) => setForm({ ...form, price: e.target.value })}
               style={inputStyle}
-              onFocus={(e) => (e.currentTarget.style.border = "1px solid #111")}
-              onBlur={(e) => (e.currentTarget.style.border = "1px solid #b8b8b8")}
             />
 
             <input
@@ -380,17 +515,6 @@ export default function Home() {
               value={form.quantity}
               onChange={(e) => setForm({ ...form, quantity: e.target.value })}
               style={inputStyle}
-              onFocus={(e) => (e.currentTarget.style.border = "1px solid #111")}
-              onBlur={(e) => (e.currentTarget.style.border = "1px solid #b8b8b8")}
-            />
-
-            <input
-              placeholder="Your Email"
-              value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
-              style={inputStyle}
-              onFocus={(e) => (e.currentTarget.style.border = "1px solid #111")}
-              onBlur={(e) => (e.currentTarget.style.border = "1px solid #b8b8b8")}
             />
 
             <button
@@ -450,12 +574,6 @@ export default function Home() {
                     setBuyerForm({ ...buyerForm, name: e.target.value })
                   }
                   style={inputStyle}
-                  onFocus={(e) =>
-                    (e.currentTarget.style.border = "1px solid #111")
-                  }
-                  onBlur={(e) =>
-                    (e.currentTarget.style.border = "1px solid #b8b8b8")
-                  }
                 />
 
                 <input
@@ -465,12 +583,6 @@ export default function Home() {
                     setBuyerForm({ ...buyerForm, email: e.target.value })
                   }
                   style={inputStyle}
-                  onFocus={(e) =>
-                    (e.currentTarget.style.border = "1px solid #111")
-                  }
-                  onBlur={(e) =>
-                    (e.currentTarget.style.border = "1px solid #b8b8b8")
-                  }
                 />
 
                 <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
