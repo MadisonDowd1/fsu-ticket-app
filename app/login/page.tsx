@@ -80,6 +80,7 @@ export default function LoginPage() {
         <h1 style={{ color: "#111", marginBottom: 8 }}>
           {mode === "login" ? "Sign In" : "Create Account"}
         </h1>
+
         <p style={{ color: "#555", marginTop: 0, marginBottom: 20 }}>
           Access your listings and manage your tickets.
         </p>
